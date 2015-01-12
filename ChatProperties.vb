@@ -10,6 +10,7 @@ Public Class ChatProperties
     Private TellRecordUsers As Dictionary(Of UInteger, String)
     Private TellRecordMessages As Dictionary(Of UInteger, String)
     Private ChatLog As List(Of String) = New List(Of String)
+    Private ChatQuitting, ChatExiting As Boolean 'ChatQutting = connection failed, ChatExiting = !exit used
     Private SpamTimer As Timers.Timer
     Private IsCommandsEnabled = True
     Private IsLoggingEnabled = True
@@ -101,7 +102,18 @@ Public Class ChatProperties
         End Select
     End Sub
 
-    Public Sub AddToLog(username As String, usernameOfMod As String, text As String, messageType As Byte)
+    Public Sub RemoveFromList(userGroup As String, user As String)
+        Select Case userGroup
+            Case "users"
+                Users.Remove(user)
+            Case "mods"
+                Mods.Remove(user)
+            Case "admins"
+                Admins.Remove(user)
+        End Select
+    End Sub
+
+    Public Sub AddToLog(username As String, usernameOfMod As String, text As String, banTime As String, messageType As Byte)
         'Message Types
         '1 - Normal chat message
         '2 - User joined chat
@@ -123,7 +135,7 @@ Public Class ChatProperties
                 LogMessage = LogMessage & "-!- " & username & " was kicked from Special:Chat by " & usernameOfMod
                 Exit Select
             Case 5
-                LogMessage = LogMessage & "-!- " & username & " was banned from Special:Chat by " & usernameOfMod
+                LogMessage = LogMessage & "-!- " & username & " was banned from Special:Chat by " & usernameOfMod & " for " & banTime & " seconds"
                 Exit Select
         End Select
         Me.ChatLog.Add(LogMessage)
@@ -146,5 +158,21 @@ Public Class ChatProperties
     Public Function GetLoggingEnabled() As Boolean
         Return IsLoggingEnabled
     End Function
+
+    Public Function GetChatQuitting() As Boolean
+        Return ChatQuitting
+    End Function
+
+    Public Sub SetChatQuitting(val As Boolean)
+        ChatQuitting = val
+    End Sub
+
+    Public Function GetChatExiting() As Boolean
+        Return ChatExiting
+    End Function
+
+    Public Sub SetChatExiting(val As Boolean)
+        ChatExiting = val
+    End Sub
 
 End Class

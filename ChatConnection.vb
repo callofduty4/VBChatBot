@@ -14,7 +14,6 @@ Public Class ChatConnection
     Private UserAgent As String = My.Resources.ChatConnection_UserAgent
     Private ChatKey, ChatServer, ChatServerID, ChatPort, ChatRoomID, ChatSession, ChatURL As String
     Private PingInterval, CommandsUsed As UInteger
-    Private ChatQuitting As Boolean = False
     Private ConstantConnection As BackgroundWorker = New BackgroundWorker()
     Private Cookies As CookieContainer
     Private ChatProperties As ChatProperties = New ChatProperties()
@@ -34,21 +33,23 @@ Public Class ChatConnection
     End Function
 
     Public Sub Initiate(cookies As CookieContainer)
+        ChatProperties.SetChatQuitting(False)
+        ChatProperties.SetChatExiting(False)
         Me.Cookies = cookies
         Debug.WriteLine("Getting chat info")
-        Me.GetChatInfo()
+        GetChatInfo()
         Debug.WriteLine("Chat info obtained")
-        If Not Me.ChatQuitting Then
+        If Not ChatProperties.GetChatQuitting() Then
             Debug.WriteLine("Get chat key")
-            Me.MakeConnection()
+            MakeConnection()
             Debug.WriteLine("Chat key obtained")
-            If Not Me.ChatQuitting Then
+            If Not ChatProperties.GetChatQuitting() Then
                 Debug.WriteLine("Starting connection")
             Else
-                Me.OnFailedConnection()
+                OnFailedConnection()
             End If
         Else
-            Me.OnFailedConnection()
+            OnFailedConnection()
         End If
     End Sub
 
@@ -66,7 +67,7 @@ Public Class ChatConnection
             ParseChatInfo(ChatInfo)
         Catch e As Exception
             'TODO deal with error in getting chat info
-            Me.ChatQuitting = True
+            ChatProperties.SetChatQuitting(True)
         End Try
     End Sub
 
@@ -103,15 +104,16 @@ Public Class ChatConnection
             Me.PingInterval = CInt(APIResponseData("pingInterval"))
         Catch e As Exception
             'TODO deal with error in getting chat session
-            Me.ChatQuitting = True
+            ChatProperties.SetChatQuitting(True)
         End Try
     End Sub
 
     Private Sub MakeConstantConnection()
-        While Not Me.ChatQuitting
+        While Not (ChatProperties.GetChatQuitting() Or ChatProperties.GetChatExiting())
             Me.SendXHR()
             Debug.WriteLine(DateTime.UtcNow.ToShortTimeString + " Sending now")
         End While
+        OnDisconnection()
     End Sub
 
     Private Sub SendXHR()
@@ -128,27 +130,29 @@ Public Class ChatConnection
             Dim rgx As New Regex("(�|�)")
             Dim ChatResponseString As String = ChatReadStream.ReadToEnd()
             Dim ChatResponseStrings As String() = rgx.Split(ChatResponseString)
-            ChatUI.Dispatcher.BeginInvoke(Sub()
-                                              ChatUI.AddToLog(Me.Wiki, ChatResponseString)
-                                          End Sub)
             For Each chatString As String In ChatResponseStrings
-                Debug.WriteLine(chatString)
                 ClassifyChatString(chatString)
             Next
             ChatResponse.Close()
             ChatReceiveStream.Close()
         Catch e As Exception
             Debug.WriteLine("SendXHR: " + e.Message)
-            Me.ChatQuitting = True
+            ChatProperties.SetChatQuitting(True)
         End Try
     End Sub
 
     Private Sub ClassifyChatString(chatString As String)
-        If chatString.StartsWith("40")
-            Dim ChatJoin As New Thread(AddressOf Me.OnChatConnect)
+        If chatString.StartsWith("40") Then
+            ChatUI.Dispatcher.BeginInvoke(Sub()
+                                              ChatUI.AddToLog(Me.Wiki, chatString)
+                                          End Sub)
+            Dim ChatJoin As New Thread(AddressOf OnChatConnect)
             ChatJoin.Start()
         End If
         If chatString.StartsWith("42") Then
+            ChatUI.Dispatcher.BeginInvoke(Sub()
+                                              ChatUI.AddToLog(Me.Wiki, chatString)
+                                          End Sub)
             Dim LookAtNewMessage As New Thread(Sub()
                                                    OnEvent(chatString.Substring(2))
                                                End Sub)
@@ -205,10 +209,10 @@ Public Class ChatConnection
         PingThread.Start()
     End Sub
 
-    Private Sub OnEvent(ChatResponseString As String)
+    Private Sub OnEvent(chatResponseString As String)
         Dim JsonDecoder = New JsonSerializer()
         Try
-            Dim MessageDataArray As JArray = JArray.Parse(ChatResponseString)
+            Dim MessageDataArray As JArray = JArray.Parse(chatResponseString)
             Dim MessageData As JObject = JObject.Parse(MessageDataArray.Last.ToString())
             Dim [Event] As String = MessageData("event").ToString()
             ' Determine what type of event
@@ -216,25 +220,28 @@ Public Class ChatConnection
                 Case ("initial")
                     ' Data received on connection to chat after OnChatConnect() called
                     PingChat()
-                    Me.ChatProperties.PopulateList(MessageData, "user")
-                    Me.ChatProperties.PopulateList(MessageData, "mod")
-                    Me.ChatProperties.PopulateList(MessageData, "admin")
+                    ChatProperties.PopulateList(MessageData, "user")
+                    ChatProperties.PopulateList(MessageData, "mod")
+                    ChatProperties.PopulateList(MessageData, "admin")
                     Exit Select
                 Case ("join")
                     ' Data received when a user joins chat
-                    Me.OnJoin(MessageData)
+                    OnJoin(MessageData)
                     Exit Select
-                Case ("logout")
+                Case ("part"), ("logout")
                     ' Data received when a user exits chat
-                    Me.OnPart(MessageData)
+                    OnPart(MessageData)
                     Exit Select
                 Case ("chat:add")
                     ' Data received when a post is made
-                    Me.OnMessage(MessageData)
+                    OnMessage(MessageData)
                     Exit Select
-                Case ("ban"), ("kick")
+                Case ("kick")
+                    ' Data received when a kick is made
+                    OnKick(MessageData)
+                Case ("ban")
                     ' Data received when a ban is made
-                    Me.OnKickBan(MessageData, [Event])
+                    OnBan(MessageData)
                     Exit Select
             End Select
             ' Not really any need to deal with any exception... 
@@ -242,31 +249,45 @@ Public Class ChatConnection
         End Try
     End Sub
 
-    Private Sub OnJoin(MessageData As JObject)
-        Dim MessageJSON As String = MessageData("data").ToString()
-        MessageData = JObject.Parse(MessageJSON)
-        Dim User As String = MessageData("attrs")("name").ToString()
-        If Not Me.ChatProperties.GetList("users").Contains(User) Then
-            Dim Moderator As String = MessageData("attrs")("isModerator").ToString()
-            Dim Admin As String = MessageData("attrs")("isCanGiveChatMod").ToString()
-            If Moderator = "True" AndAlso Not Me.ChatProperties.GetList("mods").Contains(User) Then
-                Me.ChatProperties.AddToList("mods", User)
+    Private Sub OnJoin(messageData As JObject)
+        Dim MessageJSON As String = messageData("data").ToString()
+        messageData = JObject.Parse(MessageJSON)
+        Dim User As String = messageData("attrs")("name").ToString()
+        If Not ChatProperties.GetList("users").Contains(User) Then
+            ChatProperties.AddToList("users", User)
+            Dim Moderator As String = messageData("attrs")("isModerator").ToString()
+            Dim Admin As String = messageData("attrs")("isCanGiveChatMod").ToString()
+            If Moderator = "True" AndAlso Not ChatProperties.GetList("mods").Contains(User) Then
+                ChatProperties.AddToList("mods", User)
             End If
-            If Admin = "True" AndAlso Not Me.ChatProperties.GetList("admins").Contains(User) Then
-                Me.ChatProperties.AddToList("admins", User)
+            If Admin = "True" AndAlso Not ChatProperties.GetList("admins").Contains(User) Then
+                ChatProperties.AddToList("admins", User)
             End If
+            ChatProperties.AddToLog(User, Nothing, Nothing, Nothing, 2)
         End If
     End Sub
 
-    Private Sub OnPart(MessageData As JObject)
-        Throw New NotImplementedException
+    Private Sub OnPart(messageData As JObject)
+        Dim MessageJSON As String = messageData("data").ToString()
+        messageData = JObject.Parse(MessageJSON)
+        Dim User As String = messageData("attrs")("name").ToString()
+        If ChatProperties.GetList("users").Contains(User) Then
+            ChatProperties.RemoveFromList("users", User)
+            If ChatProperties.GetList("mods").Contains(User) Then
+                Me.ChatProperties.RemoveFromList("mods", User)
+            End If
+            If ChatProperties.GetList("admins").Contains(User) Then
+                ChatProperties.RemoveFromList("admins", User)
+            End If
+            ChatProperties.AddToLog(User, Nothing, Nothing, Nothing, 3)
+        End If
     End Sub
 
-    Private Sub OnMessage(MessageData As JObject)
-        Dim MessageJSON As String = MessageData("data").ToString()
-        MessageData = JObject.Parse(MessageJSON)
-        Dim Text As String = MessageData("attrs")("text").ToString()
-        Dim Name As String = MessageData("attrs")("name").ToString()
+    Private Sub OnMessage(messageData As JObject)
+        Dim MessageJSON As String = messageData("data").ToString()
+        messageData = JObject.Parse(MessageJSON)
+        Dim Text As String = messageData("attrs")("text").ToString()
+        Dim Name As String = messageData("attrs")("name").ToString()
         Dim IsModerator As Boolean = False
         Dim IsAdmin As Boolean = False
         If Me.ChatProperties.GetList("mods").Contains(Name) Then
@@ -275,23 +296,35 @@ Public Class ChatConnection
         If Me.ChatProperties.GetList("admins").Contains(Name) Then
             IsAdmin = True
         End If
-        If Me.ChatProperties.GetLoggingEnabled = True Then
-            Me.ChatProperties.AddToLog(Name, "", Text, 1)
+        If ChatProperties.GetLoggingEnabled = True Then
+            ChatProperties.AddToLog(Name, "", Text, Nothing, 1)
         End If
         'TODO Tell record
-        If Text(0) = "!"c AndAlso Name <> Me.Username Then
+        If Text(0) = "!"c AndAlso Name <> Username Then
             Dim Chat_Command As New Thread(Sub()
-                                               Dim NewCommand As Command = New Command(Text, Name, Me.Wiki, IsModerator, IsAdmin, Me.ChatProperties)
+                                               Dim NewCommand As Command = New Command(Text, Name, Me.Wiki, IsModerator, IsAdmin, ChatProperties)
                                                Dim TextToSend As String = NewCommand.Execute()
                                                SendMessage(TextToSend)
                                            End Sub)
             Chat_Command.Start()
         End If
-
     End Sub
 
-    Private Sub OnKickBan(MessageData As JObject, [Event] As String)
-        Throw New NotImplementedException
+    Private Sub OnKick(messageData As JObject)
+        Dim MessageJSON As String = messageData("data").ToString()
+        messageData = JObject.Parse(MessageJSON)
+        Dim KickedUser As String = messageData("attrs")("kickedUserName").ToString()
+        Dim Moderator As String = messageData("attrs")("moderatorName").ToString()
+        ChatProperties.AddToLog(KickedUser, Moderator, Nothing, Nothing, 4)
+    End Sub
+
+    Private Sub OnBan(messageData As JObject)
+        Dim MessageJSON As String = messageData("data").ToString()
+        messageData = JObject.Parse(MessageJSON)
+        Dim KickedUser As String = messageData("attrs")("kickedUserName").ToString()
+        Dim Moderator As String = messageData("attrs")("moderatorName").ToString()
+        Dim Time As String = messageData("attrs")("time").ToString()
+        ChatProperties.AddToLog(KickedUser, Moderator, Nothing, Time, 5)
     End Sub
 
     Private Sub OnFailedConnection()
@@ -299,7 +332,13 @@ Public Class ChatConnection
     End Sub
 
     Private Sub OnDisconnection()
-        'Throw New NotImplementedException
+        If ChatProperties.GetChatQuitting() Then
+            Initiate(Cookies)
+            ' TODO add to log that bot is restarting
+        ElseIf ChatProperties.GetChatExiting Then
+            SendDataToChat("42[""message"",""{\""id\"":null,\""attrs\"":{\""msgType\"":\""command\"",\""command\"":\""logout\""}}""]")
+            ' TODO add to log that bot was quit by mod
+        End If
     End Sub
 
     Private Sub ConstantConnection_DoWork(ByVal sender As Object, ByVal e As DoWorkEventArgs)
@@ -309,6 +348,5 @@ Public Class ChatConnection
     Private Sub ConstantConnection_RunWorkerCompleted(ByVal sender As Object, ByVal e As RunWorkerCompletedEventArgs)
         Me.OnDisconnection()
     End Sub
-
 
 End Class
