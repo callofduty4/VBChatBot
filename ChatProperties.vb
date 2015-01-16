@@ -150,7 +150,7 @@ Public Class ChatProperties
             Next
             FileWriter.Close()
         Else
-            File.Create(FileName)
+            File.Create(FileName).Dispose()
             Me.SaveLog(wiki)
         End If
     End Sub

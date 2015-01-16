@@ -1,0 +1,15 @@
+﻿<UserControl x:Class="ChatUI"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
+             mc:Ignorable="d" 
+             d:DesignHeight="419" d:DesignWidth="742">
+    <Grid x:Name="Main_Grid">
+        <TabControl x:Name="Chat_TabControl" Margin="10,10,10,39">
+            
+        </TabControl>
+        <TextBox Margin="10,0,10,10" TextWrapping="Wrap" Text="TextBox" Height="24" VerticalAlignment="Bottom"/>
+
+    </Grid>
+</UserControl>
